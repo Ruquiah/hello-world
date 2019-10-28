@@ -1,0 +1,182 @@
+def spawn_process(cmd):
+    logger.info("[utils][spawn_process] Initiating process for command '{}'".format(cmd))
+    p      = subprocess.Popen(cmd, stdout = subprocess.PIPE)
+    output = p.stdout.read().decode('utf-8')
+    p.stdout.close()
+    status = p.returncode
+    logger.info("[utils][spawn_process] Process terminated with status '{}'".format(status))
+    return status,output
+
+def disk_usage():
+    if os.name == "posix":
+        cmd    = ['df','-h']
+        status, output = spawn_process(cmd)
+        if status is None:
+            disk_info_list = []
+            for line in output.splitlines():
+                if line.startswith("Filesystem"):
+                    continue
+                each_line = line.split()
+                
+                disk_info               = {}
+                disk_info["Filesystem"] = each_line[0]
+                disk_info["Size"]       = each_line[1]
+                disk_info["Used"]       = each_line[2]
+                disk_info["Avail"]      = each_line[3]
+                disk_info["Use%"]       = each_line[4]
+                disk_info["Mounted on"] = each_line[5]
+                disk_info_list.append(disk_info)
+        else:
+            logger.info("[utils][disk_usage] Return status of process is '{}'. Hence abort".format(status))
+            return None
+        return disk_info_list
+    else:  
+        cmd = ['Fsutil', 'volume', 'diskfree', 'c:' ]
+        status, output = spawn_process(cmd)
+        if status is None:
+            disk_info_list = []
+            for line in output.splitlines():
+                each_line = line.split()
+                disk_info_list.append(each_line[-1])
+                disk_info                = {}
+                disk_info["Free Space"]  = humanize.naturalsize(int(disk_info_list[0]))
+                disk_info["Total Space"] = humanize.naturalsize(int(disk_info_list[1]))
+                used_space               = int(disk_info_list[1]) - int(disk_info_list[0])
+                disk_info["Used Space"]  = humanize.naturalsize(used_space)
+        else:
+            logger.info("[utils][disk_usage] Return status of process is '{}'. Hence abort".format(status))
+            return None
+        return disk_info
+
+def ram_usage():
+    if os.name == "posix":
+        cmd = ['free','-h']
+        status, output = spawn_process(cmd)
+        if status is None:
+            ram_info_list = []
+            for line in output.splitlines():
+                if line.startswith("total"):
+                    continue
+                each_line = line.split()
+                
+                if line.startswith("Mem"):
+                    Ram_Memory = {}
+                    Ram_Memory["RAM_Memory"]  = each_line[0]
+                    Ram_Memory["total"]       = each_line[1]
+                    Ram_Memory["used"]        = each_line[2]
+                    Ram_Memory["free"]        = each_line[3]
+                    Ram_Memory["shared"]      = each_line[4]
+                    Ram_Memory["buffe/cache"] = each_line[5]
+                    Ram_Memory["available"]   = each_line[6]
+                    ram_info_list.append(Ram_Memory)
+                
+                if line.startswith("Swap"):
+                    Swap_Memory = {}
+                    Swap_Memory["SWAP_Memory"] = each_line[0]
+                    Swap_Memory["total"]       = each_line[1]
+                    Swap_Memory["used"]        = each_line[2]
+                    Swap_Memory["free"]        = each_line[3]
+                    ram_info_list.append(Swap_Memory)
+        else:
+            logger.info("[utils][ram_usage] Return status of process is '{}'. Hence abort".format(status))
+            return None
+        return ram_info_list
+    else:
+        cmd = ['systeminfo']
+        status, output = spawn_process(cmd)
+        if status is None:
+            ram_info_list = []
+            phy_mem = {}
+            for line in output.splitlines():
+                each_line = line.split()
+                if line.startswith("Total Physical Memory"):
+                    phy_mem["Total RAM"] = each_line[3]+" "+each_line[4]
+                elif line.startswith("Available Physical Memory"):
+                    phy_mem["Available RAM"] = each_line[3]+" "+each_line[4]
+                else:
+                    continue
+        else:
+            logger.info("[utils][ram_usage] Return status of process is '{}'. Hence abort".format(status))
+            return None
+        return phy_mem                
+
+def cpu_usage():
+    if os.name == "posix":
+        cmd = ['mpstat', '-P', 'ALL']
+        status, output = spawn_process(cmd)
+        if status is None:
+            cpu_info_list = []
+            for line in output.splitlines():
+                if (line.startswith("Linux") or (not line)):
+                    continue
+                each_line = line.split()
+                if each_line[2] == "CPU":
+                    continue
+                
+                cpu_info = {}
+                cpu_info["CPU"] = each_line[2]
+                cpu_info["user_level_utilization(%)"] = each_line[3]
+                cpu_info["system_level_utilization(%)"] = each_line[5]
+                cpu_info["idle(%)"] = each_line[-1]
+                cpu_info_list.append(cpu_info)
+        else:
+            logger.info("[utils][cpu_usage] Return status of process is '{}'. Hence abort".format(status))
+            return None
+        return cpu_info_list
+    else:
+        cmd = ['wmic','cpu', 'get','loadpercentage']
+        status, output = spawn_process(cmd)
+        if status is None:
+            for line in output.splitlines():
+                if line.startswith("Load") or (not line):
+                    continue
+                each_line = line.split()
+                cpu_info = {}
+                cpu_info["CPU_Load_Percentage"] = each_line[0]
+        else:
+            logger.info("[utils][cpu_usage] Return status of process is '{}'.Hence abort".format(status))
+            return None
+        return cpu_info
+
+@app.route('/resource_usage',method = 'GET')
+def get_resource_usage():
+    try:
+        info = json.loads(bottle.request.query.s) if bottle.request.query.s else {}
+        logger.info("[get_resource_usage] Input info obtained is '{}'".format(info))
+    except Exception as ex:
+        logger.debug("[get_resource_usage] Exception obtained '{}'".format(ex))
+        bottle.abort(500, json.dumps({"Errors":[str(ex)]}))
+    
+    if info.get("disk_usage") == True:
+        try:
+            disk_info_list = utils.disk_usage()
+            logger.info("[get_resource_usage][disk] Disk info obtained is '{}'".format(disk_info_list))
+            if disk_info_list is not None:
+                return {"Disk info" : disk_info_list}
+            else:
+                return {"Error":"Process terminated with unexpected status"}
+
+        except Exception as ex:
+            logger.debug("[get_resource_usage][disk] Exception obtained -- '{}'".format(ex))
+
+    if info.get("ram_usage") == True:
+        try:            
+            ram_info_list = utils.ram_usage()
+            logger.info("[get_resource_usage][ram] Ram info obtained is '{}'".format(ram_info_list))
+            if ram_info_list is not None:
+                return {"Ram usage":ram_info_list}
+            else:
+                return {"Error":"Process terminated with unexpected status"}
+        except Exception as ex:
+            logger.debug("[get_resource_usage][ram] Exception obtained -- '{}'".format(ex))
+    
+    if info.get("cpu_usage") == True:
+        try:
+            cpu_info_list = utils.cpu_usage()
+            logger.info("[get_resource_usage][cpu] Cpu info obtained is '{}'".format(cpu_info_list))
+            if cpu_info_list is not None:
+                return {"Cpu usage":cpu_info_list}
+            else:
+                return {"Error":"Process terminated with unexpected status"}
+        except Exception as ex:
+            logger.debug("[get_resource_usage][cpu] Exception obtained -- '{}'".format(ex))
