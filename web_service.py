@@ -1,3 +1,124 @@
+import xlwt
+import json
+import time
+import bottle
+from bottle import static_file, request
+import humanize
+import os
+import sys
+sys.path.append('/opt/HSM3')
+from commons import hsm_logger
+logger = hsm_logger("webservice")
+#db is your mongo database instance
+
+def json_friendly(obj):
+    if not obj or type(obj) in (int, float, str, bool):
+        return obj
+
+    if type(obj) == datetime.datetime:
+        return obj.strftime('%Y-%m-%dT%H:%M:%S')
+
+    if type(obj) == dict:
+        for k in obj:
+            obj[k] = json_friendly(obj[k])
+        return obj
+
+    if type(obj) == list:
+        for i, v in enumerate(obj):
+            obj[i] = json_friendly(v)
+        return obj
+
+    if type(obj) == tuple:
+        temp = []
+        for v in obj:
+            temp.append(json_friendly(v))
+        return tuple(temp)
+    return str(obj)
+
+def convert_size(size):
+    count = 0
+    size_list = ["Bytes", "KB", "MB", "GB", "TB"]
+    while int(size) != 0:
+        if int(size/1024) == 0:
+            break
+        size = (size/1024)
+        count += 1
+    for index,value in enumerate(size_list):
+        if index == count:
+            return size,value
+
+ def validate_keys(valid_keys, data, info={}, errors=[]):
+    """
+    Checks each key in valid_keys with key in data, If key in data is valid then it adds that key to info
+    Example1
+    Input:  valid_keys = {"name": str, "age": int, "mobile_number": "str", "address": dict}
+            data = {"name":"Arun", "age": "24", "address": {"home_no": 103, "city": "Banglore"}}
+            info = {}
+            errors = {}
+    Output: info = {"name": "Arun", "address": {"home_no": 103, "city": "Banglore"}}
+            errors = ["mobile_number is missing", "Invalid data type: age should be of type int"] 
+
+    Example2
+    Input:  valid_keys = {"name": str, "age": int, "mobile_number": "str", "address": dict}
+            data = {"name":"Arun", "age": 24, "mobile_number": "8553511878", "company": "Karthavya", "address": {"home_no": 103, "city": "Banglore"}}
+    Output: info = {"name":"Arun", "age": 24, "mobile_number": "8553511878", "address": {"home_no": 103, "city": "Banglore"}}   
+            errors = []   
+            
+    """
+    for key in valid_keys:
+        if not key in data:
+            errors.append("{} is missing".format(key))
+        elif not isinstance(data[key], valid_keys[key]):
+            errors.append("Invalid data type: {} should be of type {}".format(data[key], valid_keys[key]))
+        else:
+            if type(data[key]) != bool and type(data[key]) != int:
+                if not data[key]:
+                    errors.append("{} is empty".format(data[key]))
+            elif type(data[key]) == bool:
+                if not data[key] in [True, False]:
+                    errors.append("{} is empty".format(valid_keys[key]))
+            
+        if not errors:
+            info[key] = data[key]
+
+        
+        
+def write_content_to_xls_file(data_content, xls_heading_list, dict_keys, file_path):
+    try:
+        xls_sheet_row_limit = 65535
+        wbk = xlwt.Workbook(encoding='utf-8', style_compression=0)
+
+        sheet = wbk.add_sheet("sheet1", cell_overwrite_ok=True)
+        column_index = 0
+        rows_index = 0
+        starting_row_index = 2
+        sheet_number = 1
+        for heading in xls_heading_list:
+            sheet.write(rows_index, column_index , heading) 
+            column_index += 1
+        for values in data_content:
+            if starting_row_index > xls_sheet_row_limit:
+                sheet_num = sheet_number + 1
+                sheet = wbk.add_sheet("sheet" + sheet_num, cell_overwrite_ok=True)
+                row_value = 0
+                col_value = 0
+                starting_row_index = 1
+                for heading in xls_heading_list:
+                    sheet.write(row_value, col_value, heading)
+                    col_value += 1
+
+            col_index = 0
+            for keys in dict_keys:
+                key_values = values.get(keys," ")
+                sheet.write(starting_row_index, col_index, str(key_values))
+                col_index += 1
+            starting_row_index += 1
+        wbk.save(file_path)
+        return file_path
+    except Exception as ex:
+        logger.debug('[write_content_to_xls_file]: Exception obtained. Reason :: {}'.format(ex))
+        
+
 @app.route('/cached_reports',method='GET')
 def get_cached_report():
     
@@ -70,12 +191,11 @@ def get_cached_report():
         print(cached_assets_list)
         logger.debug("[get_cached_report] Number of assets found is: {}".format(len(cached_assets_list)))
         if not info.get("download") :
-            return {"cached_assets" : utils.json_friendly(cached_assets_list)}
+            return {"cached_assets" : json_friendly(cached_assets_list)}
         if cached_assets_list:
-            xls_file = utils.write_content_to_xls_file(cached_assets_list, xls_heading_list, dict_keys, file_path)
+            xls_file = write_content_to_xls_file(cached_assets_list, xls_heading_list, dict_keys, file_path)
             if not xls_file:
                 bottle.abort(500, json.dumps({'errors':["Not able to create xls file"]}))
-            utils.delete_xls_reports(xls_file_path)
             return static_file(filename, xls_file_path, download=filename)  
 
     except Exception as e:
@@ -176,12 +296,11 @@ def get_containers_report():
         print(container_assets_list)
         logger.debug("The number of assets found {}".format(len(container_assets_list)))
         if not info.get("download") :
-            return {"container_assets" : utils.json_friendly(container_assets_list)}
+            return {"container_assets" :json_friendly(container_assets_list)}
         if container_assets_list:
-            xls_file = utils.write_content_to_xls_file(container_assets_list, xls_heading_list, dict_keys, file_path)
+            xls_file = write_content_to_xls_file(container_assets_list, xls_heading_list, dict_keys, file_path)
             if not xls_file:
                 bottle.abort(500, json.dumps({'errors':["Not able to create xls file"]}))
-            utils.delete_xls_reports(xls_file_path)
             return static_file(filename, xls_file_path, download=filename)
 
     except Exception as ex:
@@ -305,12 +424,11 @@ def get_storage_report():
         print(storage_list)
         logger.debug("The number of assets found {}".format(len(storage_list)))
         if not info.get("download") :
-            return {"container_assets_for_storage" : utils.json_friendly(storage_list)}
+            return {"container_assets_for_storage" : json_friendly(storage_list)}
         if storage_list:
-            xls_file = utils.write_content_to_xls_file(storage_list, xls_heading_list, dict_keys, file_path)
+            xls_file = write_content_to_xls_file(storage_list, xls_heading_list, dict_keys, file_path)
             if not xls_file:
                 bottle.abort(500, json.dumps({'errors':["Not able to create xls file"]}))
-            utils.delete_xls_reports(xls_file_path)
             return static_file(filename, xls_file_path, download=filename)
     except Exception as ex:
         logger.debug("[storage_report] Exception obtained. Reason :: {}".format(ex))
@@ -448,13 +566,12 @@ def get_user_report():
             logger.debug("The number of assets found {}".format(len(users_list)))
             
         if not info.get("download") :
-            return {"user_data" : utils.json_friendly(users_list)}
+            return {"user_data" : json_friendly(users_list)}
         
         if users_list:
-            xls_file = utils.write_content_to_xls_file(users_list, xls_heading_list, dict_keys, file_path)
+            xls_file = write_content_to_xls_file(users_list, xls_heading_list, dict_keys, file_path)
             if not xls_file:
                 bottle.abort(500, json.dumps({'errors':["Not able to create xls file"]}))        
-            utils.delete_xls_reports(xls_file_path)
             return static_file(filename, xls_file_path, download=filename)
     except Exception as ex:
         logger.debug("[user_reports] Exception obtained :: {}".format(ex))
@@ -518,12 +635,11 @@ def archived_files_report():
         print (archived_files)
         logger.info("[get_archived_files_report] Number of files found are '{}'".format(len(archived_files)))
         if not info.get("download") :
-            return {"archived_assets" : utils.json_friendly(archived_files[:50])}
+            return {"archived_assets" : json_friendly(archived_files[:50])}
         if archived_files:
-            xls_file = utils.write_content_to_xls_file(archived_files, xls_heading_list, dict_keys, file_path)
+            xls_file = write_content_to_xls_file(archived_files, xls_heading_list, dict_keys, file_path)
             if not xls_file:
                 bottle.abort(500, json.dumps({"Errors": "Could not write content to xls file"}))
-            utils.delete_xls_reports(xls_file_path)
             return static_file(filename, xls_file_path, download=filename)   
     except Exception as ex:
         logger.debug("[get_archived_file_report]Exception--> '{}'".format(ex))
@@ -616,8 +732,8 @@ def inventory_report():
             cont_info["cont_barcode"]    = cont.get("barcode")
             cont_info["created_time"]    = cont.get("created_datetime")
             cont_info["cont_id"]         = cont.get("container_id")
-            total_size                   = utils.convert_size(cont["total_space"])
-            free_space                   = utils.convert_size(cont["free_space"])
+            total_size                   = convert_size(cont["total_space"])
+            free_space                   = convert_size(cont["free_space"])
             cont_info["total_space"]     = (str(round(total_size[0],2))+ " " + total_size[1]) 
             cont_info["free_space"]      = (str(round(free_space[0],2))+ " " + free_space[1])         
         
@@ -637,12 +753,11 @@ def inventory_report():
         bottle.abort(500, json.dumps({"Errors":[str(ex)]}))
     logger.info("[get_inventory_report] Number of files found are '{}'".format(len(inventory_data_list)))
     if not info.get("download") :
-        return {"inventory_data" : utils.json_friendly(inventory_data_list[:50])} 
+        return {"inventory_data" :json_friendly(inventory_data_list[:50])} 
     if inventory_data_list:
-        xls_file = utils.write_content_to_xls_file(inventory_data_list, xls_heading_list, dict_keys, file_path)
+        xls_file = write_content_to_xls_file(inventory_data_list, xls_heading_list, dict_keys, file_path)
         if not xls_file:
             bottle.abort(500, json.dumps({"Errors": "Could not write content to xls file"}))
-        utils.delete_xls_reports(xls_file_path)
         return static_file(filename, xls_file_path, download=filename)
 
 @app.route('/retrieved_files_report',method = 'GET')
@@ -702,12 +817,11 @@ def retrieved_files_report():
         print (retrieved_files_list)
         logger.info("The number of assets found {}".format(len(retrieved_files_list)))
         if not info.get("download") :
-            return {"retrieved_assets" : utils.json_friendly(retrieved_files_list[:50])}
+            return {"retrieved_assets" : json_friendly(retrieved_files_list[:50])}
         if retrieved_files_list:
-            xls_file = utils.write_content_to_xls_file(retrieved_files_list, xls_heading_list, dict_keys, file_path)
+            xls_file = write_content_to_xls_file(retrieved_files_list, xls_heading_list, dict_keys, file_path)
             if not xls_file:
                 bottle.abort(500, json.dumps({'errors':["Not able to create xls file"]}))
-            utils.delete_xls_reports(xls_file_path)
             return static_file(filename, xls_file_path, download=filename)
     except Exception as ex:
         logger.debug("[get_retrieved_files_report] Exception -->'{}'".format(ex))
@@ -766,9 +880,9 @@ def audit_trial_report():
         bottle.abort(500, json.dumps({"Errors":[str(ex)]}))
     logger.info("[audit_trial_report] Number of files found are '{}'".format(len(audit_logs_list)))
     if not info.get("download") :
-        return {"audit_data" : utils.json_friendly(audit_logs_list[:50])} 
+        return {"audit_data" :json_friendly(audit_logs_list[:50])} 
     if audit_logs_list:
-        xls_file = utils.write_content_to_xls_file(audit_logs_list, xls_heading_list, dict_keys, file_path)
+        xls_file = write_content_to_xls_file(audit_logs_list, xls_heading_list, dict_keys, file_path)
         if not xls_file:
             bottle.abort(500, json.dumps({"Errors": "Could not write content to xls file"}))
         return static_file(filename, xls_file_path, download=filename)
@@ -787,9 +901,9 @@ def list_tags(tag_id = None):
         except Exception as ex:
             logger.debug('[list_one_tag] Exception Obtained --> {}'.format(ex))
             bottle.abort(404, json.dumps({'Errors':[str(ex)]}))
-        return {"tag": utils.json_friendly(tag_details)}
+        return {"tag": json_friendly(tag_details)}
     else:
-        return {"tags":utils.json_friendly(list(db.tags.find()))}
+        return {"tags":json_friendly(list(db.tags.find()))}
 
 @app.route('/tags/<tag_id>',method = 'DELETE')
 def delete_tag(tag_id):
@@ -817,7 +931,7 @@ def create_a_tag():
             update_data = {}
             errors      = []
             valid_keys  = {"tag_name": str}
-            utils.validate_keys(valid_keys, new_tag, update_data, errors)
+            validate_keys(valid_keys, new_tag, update_data, errors)
 
             if errors:
                 logger.error('[create_a_tag] Error is: {}'.format(errors))
@@ -862,7 +976,7 @@ def update_a_tag(tag_id):
             update_data = {}
             errors      = []
             valid_keys  = {"tag_name": str}
-            utils.validate_keys(valid_keys, new_tag, update_data, errors)
+            validate_keys(valid_keys, new_tag, update_data, errors)
 
             if errors:
                 logger.error('[update_a_tag] Error is: {}'.format(errors))
@@ -901,9 +1015,9 @@ def list_categories(category_id = None):
         except Exception as ex:
             logger.debug('[list_one_category] Exception --> {}'.format(ex))
             bottle.abort(404, json.dumps({'Errors':[str(ex)]}))
-        return ({"category":utils.json_friendly(category_details)})
+        return ({"category":json_friendly(category_details)})
     else:
-        return ({"categories":utils.json_friendly(list(db.categories.find()))}) 
+        return ({"categories":json_friendly(list(db.categories.find()))}) 
 
 @app.route('/categories/<category_id>',method = 'DELETE')
 def delete_a_category(category_id):
@@ -931,7 +1045,7 @@ def create_a_category():
             update_data = {}
             errors      = []
             valid_keys  = {"category_name": str}
-            utils.validate_keys(valid_keys, new_category, update_data, errors)
+            validate_keys(valid_keys, new_category, update_data, errors)
             
             if errors:
                 logger.error('[create_a_category] Error is: {}'.format(errors))
@@ -980,7 +1094,7 @@ def update_a_category(category_id):
             update_data = {}
             errors      = []
             valid_keys  = {"category_name": str}
-            utils.validate_keys(valid_keys, new_category, update_data, errors)
+            validate_keys(valid_keys, new_category, update_data, errors)
     
             if errors:
                 logger.error('[update_a_category] Error is: {}'.format(errors))
