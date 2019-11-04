@@ -1,0 +1,65 @@
+import json
+import bottle
+from bottle import route
+import logging
+from utils import *
+from constants import *
+import smtplib
+import base64
+import pymongo
+client = pymongo.MongoClient()
+db = client.create_emails
+
+@app.route("/create_emails", method='POST')
+def create_email():
+    user = check_authorized()
+    try:
+        form_data = json.loads(bottle.request.body.read().decode("utf-8"))
+    except Exception as ex:
+        logging.debug("[create_email] Exception in form data - '{}'".format(ex))
+        bottle.abort(500, json.dumps({"Error":["Exception '{}'".format(ex)]}))
+    
+    info       = {}
+    errors     = []
+    valid_keys = {"sender_id":(str), "sender_pswd":(str), "recipients":(list)}
+    utils.validate_keys(valid_keys, form_data, info, errors)
+
+    if errors:
+        logging.debug("[create_email] Errors: '{}'".format(errors))
+        bottle.abort(500, json.dumps({"Errors":errors}))
+    
+    email_id   = info["sender_id"]
+    password   = info["sender_pswd"]
+
+    try:
+        valid_recipients = []
+        regex = "^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$"
+        for each_ in info["recipients"]:
+            if (re.search(regex,each_)):
+                valid_recipients.append(each_)
+            else:
+                raise Exception ("Invalid Recipient EmailID")
+    except Exception as ex:
+        logging.debug("[Exception] '{}'".format(str(ex)))
+        return {"errors":json.dumps(str(ex))}           
+
+    try:
+        server=smtplib.SMTP('smtp.gmail.com:587')
+        server.starttls()
+        mail_man = server.login(email_id,password) 
+        server.quit()       
+    except Exception as ex:
+        logging.debug("[Exception '{}' while trying to connect to gmail".format(str(ex)))
+        return {"errors":json.dumps(str(ex))}
+
+    if mail_man:
+        info["sender_pswd"] = base64.b64encode(password.encode('utf-8', errors='strict'))
+        info["recipients"] = valid_recipients
+        update_status = db.emails.update({},info, upsert=True)
+        logging.info("[create_email] Gmail info created/updated. Status:'{}'".format(update_status))
+        log_status = db.user_log.insert({"username": user["username"],
+                                        "log_time": time.strftime("%Y-%m-%d %H:%M:%S"), "action": constants.CREATE,
+                                        "description": "Emails '{}' created.".format(info["recipients"])})
+        logging.debug("[create_email] user log insertion status: {}".format(log_status))
+        if update_status.get("upserted") or update_status.get("updatedExisting"):
+            return utils.json_friendly({"status":"Successfully created email info in db"})
